@@ -1,0 +1,14 @@
+[tool.poetry]
+name = "matrix-belote"
+version = "0.1.0"
+description = "Bot Matrix pour jouer à la Belote coinchée seul contre 3 bots"
+authors = ["MrRaph <votre.email@example.com>"]
+license = "GPL-3.0"
+
+[tool.poetry.dependencies]
+python = "^3.8"
+simplematrixbotlib = "^2.6.1"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

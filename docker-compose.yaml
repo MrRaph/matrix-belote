@@ -1,0 +1,11 @@
+services:
+  matrix-belote:
+    build: .
+    container_name: matrix-belote
+    volumes:
+      - ./data/state.json:/usr/src/app/state.json
+    environment:
+      HOMESERVER: "https://matrix.org"
+      STATE_DIR: "/data"
+      USERNAME: "belote-bot"
+      PASSWORD: "password" # or ACCESS_TOKEN=syt_...
