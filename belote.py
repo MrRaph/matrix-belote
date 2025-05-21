@@ -3,14 +3,13 @@ import random
 SUITS = ['♠', '♥', '♦', '♣']
 RANKS = ['7', '8', '9', 'J', 'Q', 'K', '10', 'A']
 
-# Valeurs des cartes
 TRUMP_VALUES = {'J': 20, '9': 14, 'A': 11, '10': 10, 'K': 4, 'Q': 3, '8': 0, '7': 0}
 NORMAL_VALUES = {'A': 11, '10': 10, 'K': 4, 'Q': 3, 'J': 2, '9': 0, '8': 0, '7': 0}
 SA_VALUES = NORMAL_VALUES.copy()
-SA_VALUES['A'] = 19  # Sans Atout
+SA_VALUES['A'] = 19
 
 class Auction:
-    """Gestion des enchères (multi-tours, SA, TA, coinche, surcoinche)"""
+    """Gestion des enchères"""
     def __init__(self, players):
         self.players = list(players)
         self.current = 0
@@ -25,7 +24,7 @@ class Auction:
         if self.finished:
             raise ValueError("Enchères déjà terminées")
         if self.players[self.current] != player:
-            raise ValueError("Pas votre tour pour enchérir")
+            raise ValueError("Pas votre tour")
         if action == 'pass':
             self.bids.append({'player': player, 'type': 'pass'})
             self.pass_count += 1
@@ -33,15 +32,13 @@ class Auction:
             if suit not in SUITS + ['SA', 'TA'] or points % 10 != 0 or not (80 <= points <= 160):
                 raise ValueError("Enchère invalide")
             if self.best and points <= self.best['points']:
-                raise ValueError("Vous devez surenchérir")
+                raise ValueError("Surenchère nécessaire")
             self.best = {'player': player, 'points': points, 'suit': suit}
             self.bids.append({'player': player, 'type': 'bid', 'points': points, 'suit': suit})
             self.pass_count = 0
         elif action == 'coinche':
-            if not self.best or self.best['player'] == player:
-                raise ValueError("Rien à coincher")
-            if self.coinched_by:
-                raise ValueError("Déjà coinché")
+            if not self.best or self.best['player'] == player or self.coinched_by:
+                raise ValueError("Impossible de coincher")
             self.coinched_by = player
             self.finished = True
             return
@@ -62,10 +59,8 @@ class Auction:
         for b in self.bids:
             if b['type'] == 'pass':
                 lines.append(f"- {b['player']}: PASS")
-            elif b['type'] == 'bid':
-                lines.append(f"- {b['player']}: {b['points']}{b['suit']}")
             else:
-                lines.append(f"- {b['player']}: {b['type'].upper()}")
+                lines.append(f"- {b['player']}: {b['points']}{b['suit']}")
         return "\n".join(lines)
 
     def to_dict(self):
@@ -86,8 +81,8 @@ class Auction:
         a.current = data['current']
         a.bids = data['bids']
         if data['best']:
-            player, points, suit = data['best']
-            a.best = {'player': player, 'points': points, 'suit': suit}
+            pl, pts, st = data['best']
+            a.best = {'player': pl, 'points': pts, 'suit': st}
         a.pass_count = data['pass_count']
         a.coinched_by = data['coinched_by']
         a.surcoinched_by = data['surcoinched_by']
@@ -95,7 +90,6 @@ class Auction:
         return a
 
 class BeloteGame:
-    """Moteur de la partie de Belote Coinchée"""
     def __init__(self, room_id, players):
         self.room_id = room_id
         self.players = list(players)
@@ -175,7 +169,7 @@ class BeloteGame:
 
     def play_card(self, player, card):
         if self.phase != 'play':
-            raise ValueError("La partie n'est pas en phase de jeu")
+            raise ValueError("Pas en phase jeu")
         if self.players[self.turn_idx] != player:
             raise ValueError("Pas votre tour")
         if card not in self.hands[player]:
@@ -199,63 +193,32 @@ class BeloteGame:
         hand = self.hands[player]
         if self.trick:
             lead_suit = self.trick[0][1][-1]
-            # fournir
             if any(c[-1] == lead_suit for c in hand) and card[-1] != lead_suit:
-                raise ValueError("Vous devez fournir la couleur demandée")
-            # couper
+                raise ValueError("Vous devez fournir")
             if not any(c[-1] == lead_suit for c in hand):
-                partner = self.players[(self.players.index(player) + 2) % len(self.players)]
-                current_winner = self._determine_trick_winner()
-                if any(c[-1] == self.trump for c in hand) and card[-1] != self.trump and current_winner != partner:
-                    raise ValueError("Vous devez couper à l'atout")
-            # surcouper
+                partner = self.players[(self.players.index(player)+2)%4]
+                curr = self._determine_trick_winner()
+                if any(c[-1] == self.trump for c in hand) and card[-1] != self.trump and curr != partner:
+                    raise ValueError("Vous devez couper")
             if card[-1] == self.trump:
                 trump_cards = [c for _, c in self.trick if c[-1] == self.trump]
                 if trump_cards:
                     best_trump = max(trump_cards, key=lambda x: TRUMP_VALUES[x[:-1]])
-                    best_trump_rank = best_trump[:-1]
-                    higher_trumps = [c for c in hand if c[-1] == self.trump and TRUMP_VALUES[c[:-1]] > TRUMP_VALUES[best_trump_rank]]
-                    if TRUMP_VALUES[card[:-1]] < TRUMP_VALUES[best_trump_rank] and higher_trumps:
-                        raise ValueError("Vous devez surcouper à l'atout")
+                    best_rank = best_trump[:-1]
+                    higher = [c for c in hand if c[-1]==self.trump and TRUMP_VALUES[c[:-1]]>TRUMP_VALUES[best_rank]]
+                    if TRUMP_VALUES[card[:-1]] < TRUMP_VALUES[best_rank] and higher:
+                        raise ValueError("Vous devez surcouper")
 
     def _determine_trick_winner(self):
-        lead_suit = self.trick[0][1][-1]
+        lead = self.trick[0][1][-1]
         best = self.trick[0]
         for ply, card in self.trick[1:]:
             rank, suit = card[:-1], card[-1]
             brank, bsuit = best[1][:-1], best[1][-1]
-            # atout
             if suit == self.trump:
                 if bsuit != self.trump or TRUMP_VALUES[rank] > TRUMP_VALUES[brank]:
                     best = (ply, card)
-            # couleur demandée
-            elif suit == lead_suit and bsuit != self.trump:
+            elif suit == lead and bsuit != self.trump:
                 if NORMAL_VALUES[rank] > NORMAL_VALUES[brank]:
                     best = (ply, card)
         return best[0]
-
-    def compute_scores(self):
-        vals = SA_VALUES if self.contract['suit'] == 'SA' else (TRUMP_VALUES if self.contract['suit'] == 'TA' else None)
-        team_pts = {0:0,1:0}
-        for p, cards in self.won.items():
-            idx = self.players.index(p)%2
-            for c in cards:
-                rank, suit = c[:-1], c[-1]
-                pt = vals[rank] if vals else (TRUMP_VALUES[rank] if suit==self.trump else NORMAL_VALUES[rank])
-                team_pts[idx]+=pt
-        if self.last_trick_winner is not None:
-            idx = self.players.index(self.last_trick_winner)%2
-            team_pts[idx]+=10
-        self.scores = {tuple(self.players[i::2]):pts for i,pts in team_pts.items()}
-        return self.scores
-
-    def apply_contract(self):
-        pren_idx = self.players.index(self.preneur)%2
-        pren_team = tuple(self.players[pren_idx::2])
-        pts = self.scores[pren_team]
-        succ = pts >= self.contract['points'] and pts>=82
-        base_preneur = self.contract['points'] if succ else 0
-        base_def = 0 if succ else 160
-        fact = 1 + (1 if self.auction.coinched_by else 0) + (2 if self.auction.surcoinched_by else 0)
-        def_idx = 1 - pren_idx
-        return {pren_team:base_preneur*fact, tuple(self.players[def_idx::2]):base_def*fact, 'success':succ}
