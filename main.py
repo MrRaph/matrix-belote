@@ -18,26 +18,10 @@ PREFIX = os.environ.get('PREFIX', 'b!')
 def match(room, message):
     return botlib.MessageMatch(room, message, bot, PREFIX)
 
-
-async def ensure_dm(room):
-    """Vérifie qu'on est en message privé (max 2 participants)."""
-    resp = await bot.async_client.joined_members(room.room_id)
-    if len(resp.members) > 2:
-        await bot.api.send_text_message(
-            room.room_id,
-            "❌ Je ne fonctionne qu'en messages privés. Je quitte ce salon."
-        )
-        await bot.api.leave_room(room.room_id)
-        return False
-    return True
-
-
 @bot.listener.on_message_event
 async def help_message(room, message):
     m = match(room, message)
     if not m.prefix() or not m.command('help'):
-        return
-    if not await ensure_dm(room):
         return
     txt = (
         "Commandes disponibles :\n"
@@ -53,14 +37,11 @@ async def help_message(room, message):
     )
     await bot.api.send_text_message(room.room_id, txt)
 
-
 @bot.listener.on_message_event
 @state.ensure_state
 async def on_start(room, message, st):
     m = match(room, message)
-    if not m.prefix() or not m.command('start'):
-        return
-    if not await ensure_dm(room):
+    if not m.command('start'):
         return
 
     key = room.room_id
@@ -72,7 +53,7 @@ async def on_start(room, message, st):
     game.start()
     st[key] = game.to_dict()
 
-    # Affichage de la table et du partenaire
+    # Affichage de la table
     table_txt = (
         "Table :\n"
         f"   Nord : {players[2]}\n"
@@ -82,156 +63,112 @@ async def on_start(room, message, st):
     )
     await bot.api.send_text_message(room.room_id, table_txt)
 
-    # Affichage immédiat de la main
+    # Affichage de la main
     hand = ' '.join(sorted(game.hands[human]))
     await bot.api.send_text_message(room.room_id, f"Votre main : {hand}")
 
-    # Enchères automatiques des bots jusqu'à votre tour
+    # Déclenche enchères bots
+    await process_bots_auction(room.room_id, human, game, st)
+
+async def process_bots_auction(room_id, human, game, st):
     auction = game.auction
-    bot_msgs = []
+    msgs = []
     while not auction.finished and auction.players[auction.current] != human:
-        player = auction.players[auction.current]
+        p = auction.players[auction.current]
         if auction.best is None:
-            action = random.choice(['pass', 'bid'])
+            action = random.choice(['pass','bid'])
         else:
-            action = 'pass' if auction.best['points'] >= 160 else random.choice(['pass', 'pass', 'bid'])
-        if action == 'pass':
-            auction.propose(player, 'pass')
-            bot_msgs.append(f"{player} a PASSÉ.")
+            action = 'pass' if auction.best['points']>=160 else random.choice(['pass','pass','bid'])
+        if action=='pass':
+            auction.propose(p,'pass')
+            msgs.append(f"{p} a PASSÉ.")
         else:
-            min_pts = auction.best['points'] + 10 if auction.best else 80
-            valid = [p for p in range(min_pts, 161, 10)]
-            if not valid:
-                auction.propose(player, 'pass')
-                bot_msgs.append(f"{player} a PASSÉ.")
+            min_pts = auction.best['points']+10 if auction.best else 80
+            options = [v for v in range(min_pts,161,10)]
+            if not options:
+                auction.propose(p,'pass')
+                msgs.append(f"{p} a PASSÉ.")
             else:
-                pts = random.choice(valid)
-                suit = random.choice(['♠', '♥', '♦', '♣', 'SA', 'TA'])
+                pts = random.choice(options)
+                suit = random.choice(['♠','♥','♦','♣','SA','TA'])
                 try:
-                    auction.propose(player, 'bid', pts, suit)
-                    bot_msgs.append(f"{player} a ENCHÉRI : {pts}{suit}.")
+                    auction.propose(p,'bid',pts,suit)
+                    msgs.append(f"{p} a ENCHÉRI : {pts}{suit}.")
                 except ValueError:
-                    auction.propose(player, 'pass')
-                    bot_msgs.append(f"{player} a PASSÉ.")
-        st[key] = game.to_dict()
-
-    for msg in bot_msgs:
-        await bot.api.send_text_message(room.room_id, msg)
-
-    # Résumé des enchères
-    summary = auction.summary()
-    txt = f"Enchères :\n{summary}"
+                    auction.propose(p,'pass')
+                    msgs.append(f"{p} a PASSÉ.")
+        st[room_id]=game.to_dict()
+    # Publier\    
+    text = f"Enchères :\n{auction.summary()}"
+    for m in msgs: text+=f"\n{m}"
     if auction.finished:
         if auction.best:
-            b = auction.best
-            txt += f"\nContrat -> {b['points']}{b['suit']} par {b['player']}"
+            b=auction.best
+            text+=f"\nContrat -> {b['points']}{b['suit']} par {b['player']}"
         else:
-            txt += "\nTout le monde a passé !"
-        txt += f"\nPhase de jeu : {game.players[game.turn_idx]} commence."
+            text+="\nTout le monde a passé !"
+        text+=f"\nPhase de jeu : {game.players[game.turn_idx]} commence."
     else:
-        txt += "\nÀ vous de PARLER."
-    await bot.api.send_text_message(room.room_id, txt)
-    st[key] = game.to_dict()
-
+        text+="\nÀ vous de PARLER."
+    await bot.api.send_text_message(room_id,text)
+    st[room_id]=game.to_dict()
 
 @bot.listener.on_message_event
 @state.ensure_state
 async def on_auction(room, message, st):
-    m = match(room, message)
-    if not m.prefix():
-        return
-    if not await ensure_dm(room):
-        return
-
-    key = room.room_id
-    if key not in st:
-        return
-
-    game = BeloteGame.from_dict(key, st[key])
-    if game.phase != 'auction':
-        return
-
-    human = message.sender
+    m=match(room,message)
+    if not m.command():return
+    key=room.room_id
+    game=BeloteGame.from_dict(key,st[key])
+    if game.phase!='auction':return
+    user=message.sender
+    cmd=m.command()
     try:
-        if m.command('pass'):
-            redeal = game.process_auction(human, 'pass')
-        elif m.command('bid'):
-            args = m.args()
-            redeal = game.process_auction(human, 'bid', int(args[0]), args[1])
-        elif m.command('coinche'):
-            redeal = game.process_auction(human, 'coinche')
-        elif m.command('surcoinche'):
-            redeal = game.process_auction(human, 'surcoinche')
-        else:
-            return
+        if cmd=='pass': res=game.process_auction(user,'pass')
+        elif cmd=='bid': args=m.args();res=game.process_auction(user,'bid',int(args[0]),args[1])
+        elif cmd=='coinche':res=game.process_auction(user,'coinche')
+        elif cmd=='surcoinche':res=game.process_auction(user,'surcoinche')
+        else: return
     except Exception as e:
-        await bot.api.send_text_message(room.room_id, f"Erreur enchère : {e}")
-        return
-
-    st[key] = game.to_dict()
-
-    # Enchères automatiques des bots après votre action
-    auction = game.auction
-    bot_msgs = []
-    while not auction.finished and auction.players[auction.current] != human:
-        player = auction.players[auction.current]
-        if auction.best is None:
-            action = random.choice(['pass', 'bid'])
-        else:
-            action = 'pass' if auction.best['points'] >= 160 else random.choice(['pass', 'pass', 'bid'])
-        if action == 'pass':
-            auction.propose(player, 'pass')
-            bot_msgs.append(f"{player} a PASSÉ.")
-        else:
-            min_pts = auction.best['points'] + 10 if auction.best else 80
-            valid = [p for p in range(min_pts, 161, 10)]
-            if not valid:
-                auction.propose(player, 'pass')
-                bot_msgs.append(f"{player} a PASSÉ.")
-            else:
-                pts = random.choice(valid)
-                suit = random.choice(['♠', '♥', '♦', '♣', 'SA', 'TA'])
+        await bot.api.send_text_message(key,f"Erreur enchère: {e}");return
+    st[key]=game.to_dict()
+    await process_bots_auction(key, user, game, st)
+    # Phase de jeu : simulation automatique des bots après enchères
+    if game.phase == 'play':
+        # tant que ce n'est pas le tour humain
+        while game.phase == 'play' and game.players[game.turn_idx] != user:
+            bot_p = game.players[game.turn_idx]
+            played = None
+            winner = None
+            # choisir première carte légale
+            for card in list(game.hands[bot_p]):
                 try:
-                    auction.propose(player, 'bid', pts, suit)
-                    bot_msgs.append(f"{player} a ENCHÉRI : {pts}{suit}.")
+                    winner = game.play_card(bot_p, card)
+                    played = card
+                    break
                 except ValueError:
-                    auction.propose(player, 'pass')
-                    bot_msgs.append(f"{player} a PASSÉ.")
+                    continue
+            if not played:
+                break
+            # sauvegarder et annoncer
+            st[key] = game.to_dict()
+            await bot.api.send_text_message(key, f"{bot_p} joue {played}")
+            if winner:
+                await bot.api.send_text_message(key, f"Pli remporté par {winner}")
+        # retour au joueur humain
+        if game.phase == 'play':
+            await bot.api.send_text_message(key, "À vous de jouer.")
         st[key] = game.to_dict()
-
-    # Résumé et transition vers jeu
-    summary = auction.summary()
-    txt = f"Enchères :\n{summary}"
-    for msg in bot_msgs:
-        txt += f"\n{msg}"
-    if auction.finished:
-        if auction.best:
-            b = auction.best
-            txt += f"\nContrat -> {b['points']}{b['suit']} par {b['player']}"
-        else:
-            txt += "\nTout le monde a passé !"
-        txt += f"\nPhase de jeu : {game.players[game.turn_idx]} commence."
-    else:
-        txt += "\nÀ vous de PARLER."
-    await bot.api.send_text_message(room.room_id, txt)
-    st[key] = game.to_dict()
-
 
 @bot.listener.on_message_event
 @state.ensure_state
-async def show_hand(room, message, st):
-    m = match(room, message)
-    if not m.prefix() or not m.command('hand'):
-        return
-    if not await ensure_dm(room):
-        return
+async def show_hand(room,message,st):
+    m=match(room,message)
+    if not m.command('hand'):return
+    key=room.room_id
+    game=BeloteGame.from_dict(key,st.get(key,{}))
+    hand=game.hands.get(message.sender,[])
+    await bot.api.send_text_message(key,f"Votre main : {' '.join(sorted(hand))}")
 
-    key = room.room_id
-    game = BeloteGame.from_dict(key, st.get(key, {}))
-    hand = game.hands.get(message.sender, [])
-    hand_txt = ' '.join(sorted(hand)) if hand else '(aucune)'
-    await bot.api.send_text_message(room.room_id, f"Votre main : {hand_txt}")
-
-
-if __name__ == '__main__':
+if __name__=='__main__':
     bot.run()

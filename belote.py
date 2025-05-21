@@ -14,8 +14,8 @@ class Auction:
     def __init__(self, players):
         self.players = list(players)
         self.current = 0
-        self.bids = []  # [{'player','type','points?','suit?'}]
-        self.best = None  # {'player','points','suit'}
+        self.bids = []
+        self.best = None
         self.pass_count = 0
         self.coinched_by = None
         self.surcoinched_by = None
@@ -53,7 +53,6 @@ class Auction:
             return
         else:
             raise ValueError("Action inconnue")
-
         self.current = (self.current + 1) % len(self.players)
         if self.pass_count >= len(self.players) - 1 and self.best:
             self.finished = True
@@ -164,7 +163,7 @@ class BeloteGame:
         return g
 
     def process_auction(self, player, action, points=None, suit=None):
-        result = self.auction.propose(player, action, points, suit)
+        res = self.auction.propose(player, action, points, suit)
         if self.auction.finished:
             if not self.auction.best:
                 return 'redeal'
@@ -172,7 +171,7 @@ class BeloteGame:
             self.preneur = self.auction.best['player']
             self.contract = self.auction.best.copy()
             self.trump = self.contract['suit']
-        return result
+        return res
 
     def play_card(self, player, card):
         if self.phase != 'play':
@@ -200,21 +199,24 @@ class BeloteGame:
         hand = self.hands[player]
         if self.trick:
             lead_suit = self.trick[0][1][-1]
+            # fournir
             if any(c[-1] == lead_suit for c in hand) and card[-1] != lead_suit:
                 raise ValueError("Vous devez fournir la couleur demandée")
+            # couper
             if not any(c[-1] == lead_suit for c in hand):
                 partner = self.players[(self.players.index(player) + 2) % len(self.players)]
                 current_winner = self._determine_trick_winner()
                 if any(c[-1] == self.trump for c in hand) and card[-1] != self.trump and current_winner != partner:
-                    raise ValueError("Vous devez couper")
+                    raise ValueError("Vous devez couper à l'atout")
+            # surcouper
             if card[-1] == self.trump:
                 trump_cards = [c for _, c in self.trick if c[-1] == self.trump]
                 if trump_cards:
                     best_trump = max(trump_cards, key=lambda x: TRUMP_VALUES[x[:-1]])
-                    if TRUMP_VALUES[card[:-1]] < TRUMP_VALUES[best_trump] and any(
-                        c[-1] == self.trump and TRUMP_VALUES[c[:-1]] > TRUMP_VALUES[best_trump]
-                        for c in hand):
-                        raise ValueError("Vous devez surcouper")
+                    best_trump_rank = best_trump[:-1]
+                    higher_trumps = [c for c in hand if c[-1] == self.trump and TRUMP_VALUES[c[:-1]] > TRUMP_VALUES[best_trump_rank]]
+                    if TRUMP_VALUES[card[:-1]] < TRUMP_VALUES[best_trump_rank] and higher_trumps:
+                        raise ValueError("Vous devez surcouper à l'atout")
 
     def _determine_trick_winner(self):
         lead_suit = self.trick[0][1][-1]
@@ -222,51 +224,38 @@ class BeloteGame:
         for ply, card in self.trick[1:]:
             rank, suit = card[:-1], card[-1]
             brank, bsuit = best[1][:-1], best[1][-1]
+            # atout
             if suit == self.trump:
                 if bsuit != self.trump or TRUMP_VALUES[rank] > TRUMP_VALUES[brank]:
                     best = (ply, card)
+            # couleur demandée
             elif suit == lead_suit and bsuit != self.trump:
                 if NORMAL_VALUES[rank] > NORMAL_VALUES[brank]:
                     best = (ply, card)
         return best[0]
 
     def compute_scores(self):
-        if self.contract['suit'] == 'SA':
-            vals = SA_VALUES
-        elif self.contract['suit'] == 'TA':
-            vals = TRUMP_VALUES
-        else:
-            vals = None
-        team_pts = {0: 0, 1: 0}
+        vals = SA_VALUES if self.contract['suit'] == 'SA' else (TRUMP_VALUES if self.contract['suit'] == 'TA' else None)
+        team_pts = {0:0,1:0}
         for p, cards in self.won.items():
-            idx = self.players.index(p) % 2
+            idx = self.players.index(p)%2
             for c in cards:
                 rank, suit = c[:-1], c[-1]
-                pt = vals[rank] if vals else (TRUMP_VALUES[rank] if suit == self.trump else NORMAL_VALUES[rank])
-                team_pts[idx] += pt
+                pt = vals[rank] if vals else (TRUMP_VALUES[rank] if suit==self.trump else NORMAL_VALUES[rank])
+                team_pts[idx]+=pt
         if self.last_trick_winner is not None:
-            idx = self.players.index(self.last_trick_winner) % 2
-            team_pts[idx] += 10
-        self.scores = {tuple(self.players[i::2]): pts for i, pts in team_pts.items()}
+            idx = self.players.index(self.last_trick_winner)%2
+            team_pts[idx]+=10
+        self.scores = {tuple(self.players[i::2]):pts for i,pts in team_pts.items()}
         return self.scores
 
     def apply_contract(self):
-        pren_idx = self.players.index(self.preneur) % 2
+        pren_idx = self.players.index(self.preneur)%2
         pren_team = tuple(self.players[pren_idx::2])
         pts = self.scores[pren_team]
-        succ = pts >= self.contract['points'] and pts >= 82
-        if succ:
-            base_preneur = self.contract['points']
-            base_def = 0
-        else:
-            base_preneur = 0
-            base_def = 160
-        fact = 1
-        if self.auction.coinched_by:
-            fact = 2
-        if self.auction.surcoinched_by:
-            fact = 4
+        succ = pts >= self.contract['points'] and pts>=82
+        base_preneur = self.contract['points'] if succ else 0
+        base_def = 0 if succ else 160
+        fact = 1 + (1 if self.auction.coinched_by else 0) + (2 if self.auction.surcoinched_by else 0)
         def_idx = 1 - pren_idx
-        return {pren_team: base_preneur * fact,
-                tuple(self.players[def_idx::2]): base_def * fact,
-                'success': succ}
+        return {pren_team:base_preneur*fact, tuple(self.players[def_idx::2]):base_def*fact, 'success':succ}
