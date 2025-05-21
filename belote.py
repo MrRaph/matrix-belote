@@ -3,13 +3,14 @@ import random
 SUITS = ['♠', '♥', '♦', '♣']
 RANKS = ['7', '8', '9', 'J', 'Q', 'K', '10', 'A']
 
+# Valeurs des cartes à l'atout et hors atout
 TRUMP_VALUES = {'J': 20, '9': 14, 'A': 11, '10': 10, 'K': 4, 'Q': 3, '8': 0, '7': 0}
 NORMAL_VALUES = {'A': 11, '10': 10, 'K': 4, 'Q': 3, 'J': 2, '9': 0, '8': 0, '7': 0}
 SA_VALUES = NORMAL_VALUES.copy()
-SA_VALUES['A'] = 19
+SA_VALUES['A'] = 19  # Sans Atout : As vaut 19
 
 class Auction:
-    """Gestion des enchères"""
+    """Gestion des enchères (prise, coinche, surcoinche)"""
     def __init__(self, players):
         self.players = list(players)
         self.current = 0
@@ -50,7 +51,9 @@ class Auction:
             return
         else:
             raise ValueError("Action inconnue")
+        # passage au joueur suivant
         self.current = (self.current + 1) % len(self.players)
+        # fin des enchères si 3 passes après une bid
         if self.pass_count >= len(self.players) - 1 and self.best:
             self.finished = True
 
@@ -90,6 +93,7 @@ class Auction:
         return a
 
 class BeloteGame:
+    """Moteur de la partie de Belote Coinchée"""
     def __init__(self, room_id, players):
         self.room_id = room_id
         self.players = list(players)
@@ -105,6 +109,13 @@ class BeloteGame:
         self.preneur = None
         self.contract = None
         self.last_trick_winner = None
+
+    def _is_trump(self, card):
+        if self.trump == 'TA':
+            return True
+        if self.trump == 'SA':
+            return False
+        return card[-1] == self.trump
 
     def rotate_dealer(self):
         self.dealer_idx = (self.dealer_idx + 1) % len(self.players)
@@ -169,7 +180,7 @@ class BeloteGame:
 
     def play_card(self, player, card):
         if self.phase != 'play':
-            raise ValueError("Pas en phase jeu")
+            raise ValueError("La partie n'est pas en phase de jeu")
         if self.players[self.turn_idx] != player:
             raise ValueError("Pas votre tour")
         if card not in self.hands[player]:
@@ -191,34 +202,53 @@ class BeloteGame:
 
     def _enforce_play_rule(self, player, card):
         hand = self.hands[player]
+        # Spécial Tout Atout : suivre la couleur demandée si possible
+        if self.trump == 'TA' and self.trick:
+            lead_suit = self.trick[0][1][-1]
+            if any(c[-1] == lead_suit for c in hand) and card[-1] != lead_suit:
+                raise ValueError("Vous devez fournir la couleur demandée")
+            return
+        # Règles classiques pour Atout normal ou Sans Atout
         if self.trick:
             lead_suit = self.trick[0][1][-1]
             if any(c[-1] == lead_suit for c in hand) and card[-1] != lead_suit:
-                raise ValueError("Vous devez fournir")
+                raise ValueError("Vous devez fournir la couleur demandée")
             if not any(c[-1] == lead_suit for c in hand):
-                partner = self.players[(self.players.index(player)+2)%4]
-                curr = self._determine_trick_winner()
-                if any(c[-1] == self.trump for c in hand) and card[-1] != self.trump and curr != partner:
-                    raise ValueError("Vous devez couper")
-            if card[-1] == self.trump:
-                trump_cards = [c for _, c in self.trick if c[-1] == self.trump]
+                partner = self.players[(self.players.index(player) + 2) % len(self.players)]
+                current_winner = self._determine_trick_winner()
+                if any(self._is_trump(c) for c in hand) and not self._is_trump(card) and current_winner != partner:
+                    raise ValueError("Vous devez couper à l'atout")
+            if self._is_trump(card):
+                trump_cards = [c for _, c in self.trick if self._is_trump(c)]
                 if trump_cards:
                     best_trump = max(trump_cards, key=lambda x: TRUMP_VALUES[x[:-1]])
                     best_rank = best_trump[:-1]
-                    higher = [c for c in hand if c[-1]==self.trump and TRUMP_VALUES[c[:-1]]>TRUMP_VALUES[best_rank]]
-                    if TRUMP_VALUES[card[:-1]] < TRUMP_VALUES[best_rank] and higher:
-                        raise ValueError("Vous devez surcouper")
+                    higher_trumps = [c for c in hand if self._is_trump(c) and TRUMP_VALUES[c[:-1]] > TRUMP_VALUES[best_rank]]
+                    if TRUMP_VALUES[card[:-1]] < TRUMP_VALUES[best_rank] and higher_trumps:
+                        raise ValueError("Vous devez surcouper à l'atout")
 
     def _determine_trick_winner(self):
-        lead = self.trick[0][1][-1]
+        lead_suit = self.trick[0][1][-1]
+        if self.trump == 'TA':
+            # candidates qui ont suivi la couleur entamée
+            same_color = [(ply, c) for ply, c in self.trick if c[-1] == lead_suit]
+            pool = same_color if same_color else self.trick
+            return max(pool, key=lambda x: TRUMP_VALUES[x[1][:-1]])[0]
+        # sinon atout normal ou SA
         best = self.trick[0]
         for ply, card in self.trick[1:]:
             rank, suit = card[:-1], card[-1]
             brank, bsuit = best[1][:-1], best[1][-1]
-            if suit == self.trump:
-                if bsuit != self.trump or TRUMP_VALUES[rank] > TRUMP_VALUES[brank]:
+            if self._is_trump(card):
+                if not self._is_trump(best[1]) or TRUMP_VALUES[rank] > TRUMP_VALUES[brank]:
                     best = (ply, card)
-            elif suit == lead and bsuit != self.trump:
+            elif suit == lead_suit and not self._is_trump(best[1]):
                 if NORMAL_VALUES[rank] > NORMAL_VALUES[brank]:
                     best = (ply, card)
         return best[0]
+
+    def compute_scores(self):
+        pass
+
+    def apply_contract(self):
+        pass

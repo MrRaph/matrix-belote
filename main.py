@@ -47,46 +47,76 @@ async def on_start(room, message, st):
 async def process_bots_auction(room_id, human, game, st):
     auction = game.auction
     msgs = []
-    # enchères IA
+
+    # --- Enchères automatiques des bots jusqu'au joueur humain ---
     while not auction.finished and auction.players[auction.current] != human:
         p = auction.players[auction.current]
         if auction.best is None:
-            action = random.choice(['pass','bid'])
+            action = random.choice(['pass', 'bid'])
         else:
             action = 'pass' if auction.best['points'] >= 160 else random.choice(['pass','pass','bid'])
         if action == 'pass':
-            auction.propose(p, 'pass'); msgs.append(f"{p} a PASSÉ.")
+            auction.propose(p, 'pass')
+            msgs.append(f"{p} a PASSÉ.")
         else:
             min_pts = auction.best['points'] + 10 if auction.best else 80
             opts = [v for v in range(min_pts, 161, 10)]
             if not opts:
-                auction.propose(p, 'pass'); msgs.append(f"{p} a PASSÉ.")
+                auction.propose(p, 'pass')
+                msgs.append(f"{p} a PASSÉ.")
             else:
                 pts = random.choice(opts)
                 suit = random.choice(['♠','♥','♦','♣','SA','TA'])
                 try:
                     auction.propose(p, 'bid', pts, suit)
-                    msgs.append(f"{p} a ENCHÉRI: {pts}{suit}.")
+                    msgs.append(f"{p} a ENCHÉRI : {pts}{suit}.")
                 except ValueError:
-                    auction.propose(p, 'pass'); msgs.append(f"{p} a PASSÉ.")
+                    auction.propose(p, 'pass')
+                    msgs.append(f"{p} a PASSÉ.")
         st[room_id] = game.to_dict()
-    # affichage enchères
+
+    # --- Si enchères terminées sans contrat (tout le monde a passé) ---
+    if auction.finished and auction.best is None:
+        await bot.api.send_text_message(room_id, "Tout le monde a passé ! Nouvelle donne en cours…")
+        game.start()
+        st[room_id] = game.to_dict()
+        # Réafficher la table et la main puis relancer les enchères
+        # (reprise du code de on_start)
+        players = game.players
+        table_txt = (
+            f"Table:\n"
+            f"   Nord: {players[2]}\n"
+            f"Ouest: {players[1]}    Est: {players[3]}\n"
+            f"   Sud: {players[0]} (vous)\n"
+            f"Partenaire: {players[2]}"
+        )
+        await bot.api.send_text_message(room_id, table_txt)
+        hand = ' '.join(sorted(game.hands[human]))
+        await bot.api.send_text_message(room_id, f"Votre main: {hand}")
+        return await process_bots_auction(room_id, human, game, st)
+
+    # --- Envoi du résumé des enchères ---
     summary = auction.summary()
     text = f"Enchères:\n{summary}"
-    for m in msgs: text += f"\n{m}"
+    for m in msgs:
+        text += f"\n{m}"
     if auction.finished:
         if auction.best:
-            b = auction.best; text += f"\nContrat -> {b['points']}{b['suit']} par {b['player']}"
+            b = auction.best
+            text += f"\nContrat -> {b['points']}{b['suit']} par {b['player']}"
         else:
-            text += "\nTout le monde a passé!"
-        text += f"\nPhase de jeu: {game.players[game.turn_idx]} commence."
+            text += "\nTout le monde a passé!"  # ne devrait pas arriver grâce au bloc précédent
+        text += f"\nPhase de jeu : {game.players[game.turn_idx]} commence."
     else:
         text += "\nÀ vous de PARLER."
+
     await bot.api.send_text_message(room_id, text)
     st[room_id] = game.to_dict()
-    # si phase de jeu, lancer bots
+
+    # --- Dès que la phase passe en 'play', on lance les bots ---
     if game.phase == 'play':
         await process_bots_play(room_id, human, game, st)
+
 
 async def process_bots_play(room_id, human, game, st):
     # tant que ce n'est pas au joueur humain
